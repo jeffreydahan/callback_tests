@@ -38,6 +38,38 @@ def before_model_callback(callback_context: CallbackContext, llm_request: LlmReq
     return None # Return None to proceed with the model call
 
 def after_model_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    # Check if the current agent is the root_agent and it's about to transfer
+    if (llm_response.content and llm_response.content.parts):
+        # Find the transfer_to_agent function call
+        for part in llm_response.content.parts:
+            if part.function_call: # and part.function_call.name == "transfer_to_agent":
+                try:
+                    # Get the name of the agent being transferred to
+                    target_agent = part.function_call.args["agent_name"]
+
+                    # Create the explanatory text
+                    explanation_text = (f"Transferring from {callback_context.agent_name} to {target_agent}.")
+
+                    # Create a new text part to be displayed in the chat
+                    explanation_part = types.Part(text=explanation_text)
+
+                    # Prepend the explanation to the original parts
+                    new_parts = [explanation_part] + list(llm_response.content.parts)
+
+                    # Create a new LlmResponse with the added text.
+                    # This will display the text and then execute the function call.
+                    new_content = types.Content(
+                        parts=new_parts, role=llm_response.content.role
+                    )
+                    return LlmResponse(
+                        content=new_content,
+                        usage_metadata=llm_response.usage_metadata,
+                    )
+                except (KeyError, TypeError):
+                    # In case args are not as expected, fall through to default.
+                    pass
+
+    # Default behavior for all other cases
     print(f"\n[Callback] <-- AFTER MODEL CALL for agent: {callback_context.agent_name}")
     if llm_response.usage_metadata:
         usage = llm_response.usage_metadata
@@ -48,7 +80,7 @@ def after_model_callback(callback_context: CallbackContext, llm_response: LlmRes
             print(f"        Candidates: {usage.candidates_token_count}")
         if usage.total_token_count:
             print(f"        Total: {usage.total_token_count}")
-    return None # Return None to use the original model response
+    return None
 
 # --- Tool Callbacks ---
 def before_tool_callback(tool: BaseTool, args: dict[str, Any], tool_context: ToolContext) -> Optional[dict]:
