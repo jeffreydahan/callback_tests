@@ -38,38 +38,43 @@ def before_model_callback(callback_context: CallbackContext, llm_request: LlmReq
     return None # Return None to proceed with the model call
 
 def after_model_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
-    # Check if the current agent is the root_agent and it's about to transfer
-    if (llm_response.content and llm_response.content.parts):
-        # Find the transfer_to_agent function call
+    if llm_response.content and llm_response.content.parts:
+        # Check if there is a transfer_to_agent call in the response
+        transfer_call_part = None
         for part in llm_response.content.parts:
-            if part.function_call: # and part.function_call.name == "transfer_to_agent":
+            if part.function_call and part.function_call.name == "transfer_to_agent":
+                transfer_call_part = part
+                break
+
+        # If a transfer is happening, decide if we need to add an explanation
+        if transfer_call_part:
+            # Check if the LLM already provided a text explanation
+            has_text_reason = any(
+                part.text.strip() for part in llm_response.content.parts if part.text
+            )
+
+            if not has_text_reason:
+                # The LLM didn't provide a reason, so we'll add a generic one.
                 try:
-                    # Get the name of the agent being transferred to
-                    target_agent = part.function_call.args["agent_name"]
-
-                    # Create the explanatory text
-                    explanation_text = (f"Transferring from {callback_context.agent_name} to {target_agent}.")
-
-                    # Create a new text part to be displayed in the chat
+                    target_agent = transfer_call_part.args["agent_name"]
+                    explanation_text = (
+                        f"Handing off to `{target_agent}` to complete the request."
+                    )
                     explanation_part = types.Part(text=explanation_text)
-
-                    # Prepend the explanation to the original parts
                     new_parts = [explanation_part] + list(llm_response.content.parts)
-
-                    # Create a new LlmResponse with the added text.
-                    # This will display the text and then execute the function call.
                     new_content = types.Content(
                         parts=new_parts, role=llm_response.content.role
                     )
+                    # Return the modified response
                     return LlmResponse(
                         content=new_content,
                         usage_metadata=llm_response.usage_metadata,
                     )
                 except (KeyError, TypeError):
-                    # In case args are not as expected, fall through to default.
+                    # Fall through if args are not as expected
                     pass
 
-    # Default behavior for all other cases
+    # Default behavior for all other cases (no transfer or transfer with reason)
     print(f"\n[Callback] <-- AFTER MODEL CALL for agent: {callback_context.agent_name}")
     if llm_response.usage_metadata:
         usage = llm_response.usage_metadata
@@ -135,9 +140,14 @@ root_agent = LlmAgent(
     name="root_agent",
     model="gemini-2.0-flash",
     description="You are an agent that provides realtime stock quotes using the latest google data",
-    instruction="""
-    For any stock-related query, you must use the search_format_agent sub-agent to get the information.
-    """,
+    instruction="""Your job is to delegate tasks to the correct sub-agent based on its description.
+When you decide to transfer to a sub-agent, you MUST first output a brief, user-facing sentence explaining your reasoning for the transfer.
+After the explanation, you MUST call the `transfer_to_agent` function.
+
+For example, if the user asks for a stock price, you might say:
+"I need to find the latest stock information, so I'll hand this over to the search agent."
+Then you would call the `transfer_to_agent` function.
+""",
 
     # All before callbacks
     before_agent_callback=before_agent_callback,
